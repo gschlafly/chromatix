@@ -60,10 +60,30 @@ class Field(struct.PyTreeNode):
             sum to 1.0.
     """
 
-    u: jnp.ndarray  # [B H W C]
-    dx: jnp.ndarray
-    spectrum: jnp.ndarray
-    spectral_density: jnp.ndarray
+    _u: jnp.ndarray  # [B, H, W, C, [3 | 1]]
+    _dx: jnp.ndarray  # [[B | 1], 1, 1, [C | 1], 1]
+    _spectrum: jnp.ndarray  # [[B | 1], 1, 1, [C| 1], 1]
+    _spectral_density: jnp.ndarray  # [[B | 1], 1, 1, [C| 1], 1]
+    vectorial: bool
+
+    def squeeze_polarisation(self, x):
+        return x.squeeze(-1) if self.vectorial else x
+
+    @property
+    def u(self):
+        return self.squeeze_polarisation(self._u)
+
+    @property
+    def dx(self):
+        return self.squeeze_polarisation(self._dx)
+
+    @property
+    def spectrum(self):
+        return self.squeeze_polarisation(self._spectrum)
+
+    @property
+    def spectral_density(self):
+        return self.squeeze_polarisation(self._spectral_density)
 
     @classmethod
     def create(
@@ -97,34 +117,50 @@ class Field(struct.PyTreeNode):
                 must be provided.
         """
         # Getting everything into right shape
-        field_dx: jnp.ndarray = rearrange(jnp.atleast_1d(dx), "c -> 1 1 1 c")
+        # TODO: Deal with 2D inits for both batch and wavelength
+
+        field_dx: jnp.ndarray = rearrange(jnp.atleast_1d(dx), "c -> 1 1 1 c 1")
         field_spectrum: jnp.ndarray = rearrange(
-            jnp.atleast_1d(spectrum), "c -> 1 1 1 c"
+            jnp.atleast_1d(spectrum), "c -> 1 1 1 c 1"
         )
         field_spectral_density: jnp.ndarray = rearrange(
-            jnp.atleast_1d(spectral_density), "c -> 1 1 1 c"
+            jnp.atleast_1d(spectral_density), "c -> 1 1 1 c 1"
         )
         field_spectral_density = field_spectral_density / jnp.sum(
             field_spectral_density
         )  # Must sum to 1
+
         assert_equal_shape([field_dx, field_spectrum, field_spectral_density])
+
         if u is None:
             # NOTE(dd): when jitting this function, shape must be a
             # static argument --- possibly requiring multiple traces
+            # Assume unpolarized
             assert shape is not None, "Must specify shape if u is None"
             field_u: jnp.ndarray = jnp.empty(
-                (1, *shape, field_spectrum.size), dtype=jnp.complex64
+                (1, *shape, field_spectrum.size, 1, 1), dtype=jnp.complex64
             )
+            polarized = False
         else:
-            field_u = u
-        assert_rank(
-            field_u, 4, custom_message="Field must be ndarray of shape `[B H W C]`"
-        )
+            # Figure out polarized or not
+            # Check that u is either 2d [scalar], 4d[scalar] or 5d[vector]
+            assert_rank(
+                u,
+                (2, 4, 5),
+                custom_message="Field must be ndarray of shape `[B H W C]`",
+            )
+            if u.ndim == 2:
+                field_u = rearrange(u, "h w -> 1 h w 1 1")
+                polarized = False
+            elif u.ndim == 4:
+                field_u = rearrange(u, "b h w l -> b h w l 1")
+                polarized = False
+            elif u.ndim == 5:
+                field_u = u
+                polarized = True
+
         field = cls(
-            field_u,
-            field_dx,
-            field_spectrum,
-            field_spectral_density,
+            field_u, field_dx, field_spectrum, field_spectral_density, polarized
         )
         return field
 
@@ -266,68 +302,3 @@ class Field(struct.PyTreeNode):
 
     def __rmod__(self, other: Any) -> Field:
         return self.replace(u=other % self.u)
-
-
-class PolarizedField(Field):
-    @classmethod
-    def create(
-        cls,
-        dx: float,
-        spectrum: Union[float, jnp.ndarray],
-        spectral_density: Union[float, jnp.ndarray],
-        u: Optional[jnp.ndarray] = None,
-        shape: Optional[Tuple[int, int]] = None,
-    ) -> Field:
-        """
-        Create a ``Field`` object in a convenient way.
-
-        Creates a ``Field`` object, accepting arguments as scalars or 1D values
-        as appropriate. This class function appropriately reshapes the given
-        values of attributes to the necessary shapes, allowing a ``Field`` to
-        be created with scalar or 1D array values for the spectrum and spectral
-        density, as desired.
-
-        Args:
-            dx: The spacing of the samples in ``u`` discretizing a continuous field.
-            spectrum: The wavelengths sampled by the field, in any units specified.
-            spectral_density: The weights of the wavelengths in the spectrum.
-                Will be normalized to sum to 1.0.
-            u: The scalar field of shape `[B 3 H W C]`. If not given,
-                the ``Field`` is allocated with uninitialized values of the
-                given ``shape``.
-            shape: A tuple defining the shape of only the spatial
-                dimensions of the ``Field`` (height and width). Not required
-                if ``u`` is provided. If ``u`` is not provided, then ``shape``
-                must be provided.
-        """
-        # Getting everything into right shape
-        field_dx: jnp.ndarray = rearrange(jnp.atleast_1d(dx), "c -> 1 1 1 1 c")
-        field_spectrum: jnp.ndarray = rearrange(
-            jnp.atleast_1d(spectrum), "c -> 1 1 1 1 c"
-        )
-        field_spectral_density: jnp.ndarray = rearrange(
-            jnp.atleast_1d(spectral_density), "c -> 1 1 1 1 c"
-        )
-        field_spectral_density = field_spectral_density / jnp.sum(
-            field_spectral_density
-        )  # Must sum to 1
-        assert_equal_shape([field_dx, field_spectrum, field_spectral_density])
-        if u is None:
-            # NOTE(dd): when jitting this function, shape must be a
-            # static argument --- possibly requiring multiple traces
-            assert shape is not None, "Must specify shape if u is None"
-            field_u: jnp.ndarray = jnp.empty(
-                (1, 3, *shape, field_spectrum.size), dtype=jnp.complex64
-            )
-        else:
-            field_u = u
-        assert_rank(
-            field_u, 5, custom_message="Field must be ndarray of shape `[B 3 H W C]`"
-        )
-        field = cls(
-            field_u,
-            field_dx,
-            field_spectrum,
-            field_spectral_density,
-        )
-        return field
