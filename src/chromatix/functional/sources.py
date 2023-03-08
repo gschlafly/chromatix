@@ -184,6 +184,7 @@ def vector_plane_wave(
     field: PolarizedField,
     k: Array,
     Ep: Array,
+    pupil: Optional[Callable[[Field], Field]] = None,
 ) -> Field:
     """
     Generates plane wave of given ``phase`` and ``power``.
@@ -205,5 +206,9 @@ def vector_plane_wave(
     u = Ep * jnp.exp(1j * jnp.dot(k[::-1], jnp.moveaxis(field.grid, 0, -2)))
     field = field.replace(u=u)
 
-    # Setting to correct power
+    # Applying pupil
+    if pupil is not None:
+        field = pupil(field)
+
+    # TODO:account for power
     return field
