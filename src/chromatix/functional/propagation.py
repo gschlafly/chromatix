@@ -1,4 +1,3 @@
-import jax
 import jax.numpy as jnp
 from ..field import Field
 from einops import rearrange
@@ -91,7 +90,6 @@ def transfer_propagate(
     if field.u.ndim > 4:
         fx, fy = rearrange(f, "h c -> 1 1 h 1 c"), rearrange(f, "w c -> 1 1 1 w c")
         u = center_pad(field.u, [0, 0, int(N_pad / 2), int(N_pad / 2), 0])
-        print("fx shape is:", fx.shape)
         phase = -jnp.pi * L**2 * (fx**2 + fy**2)
     else:
         fx, fy = rearrange(f, "h c -> 1 h 1 c"), rearrange(f, "w c -> 1 1 w c")
